@@ -1,14 +1,14 @@
 """
 Crypto Portfolio Tracker
 ========================
-FastAPI-сервис для отслеживания крипто-портфолио.
-Цены берутся с CoinGecko API (бесплатно, без ключа).
+FastAPI service for tracking a crypto portfolio in real time.
+Prices are fetched from the CoinGecko API (free, no API key required).
 
-Запуск:
+Run:
     pip install -r requirements.txt
     uvicorn main:app --reload
 
-Документация: http://127.0.0.1:8000/docs
+Docs: http://127.0.0.1:8000/docs
 """
 
 from fastapi import FastAPI, HTTPException
@@ -18,71 +18,81 @@ from typing import Optional
 
 app = FastAPI(
     title="Crypto Portfolio Tracker",
-    description="Отслеживай свой крипто-портфель в реальном времени",
+    description="Track your crypto portfolio with real-time prices",
     version="1.0.0",
 )
 
 # ---------------------------------------------------------------------------
-# CoinGecko API — бесплатный источник цен без регистрации
-# Лимит: ~30 запросов/мин для бесплатного тарифа
+# CoinGecko API — free price source, no registration required
+# Rate limit: ~30 requests/min on the free tier
 # ---------------------------------------------------------------------------
 COINGECKO_URL = "https://api.coingecko.com/api/v3"
 
-# Словарь для перевода тикера в ID CoinGecko
-# Полный список: https://api.coingecko.com/api/v3/coins/list
+# Maps ticker symbol to CoinGecko coin ID
+# Full list: https://api.coingecko.com/api/v3/coins/list
 TICKER_TO_ID: dict[str, str] = {
-    "btc":  "bitcoin",
-    "eth":  "ethereum",
-    "sol":  "solana",
-    "bnb":  "binancecoin",
-    "xrp":  "ripple",
-    "ada":  "cardano",
-    "doge": "dogecoin",
-    "ton":  "the-open-network",
-    "avax": "avalanche-2",
-    "dot":  "polkadot",
+    "btc":   "bitcoin",
+    "eth":   "ethereum",
+    "sol":   "solana",
+    "bnb":   "binancecoin",
+    "xrp":   "ripple",
+    "ada":   "cardano",
+    "doge":  "dogecoin",
+    "ton":   "the-open-network",
+    "avax":  "avalanche-2",
+    "dot":   "polkadot",
+    "matic": "matic-network",
+    "link":  "chainlink",
+    "uni":   "uniswap",
+    "atom":  "cosmos",
+    "ltc":   "litecoin",
+    "near":  "near",
+    "apt":   "aptos",
+    "sui":   "sui",
+    "op":    "optimism",
+    "arb":   "arbitrum",
 }
 
 # ---------------------------------------------------------------------------
-# "База данных" в памяти (в продакшене — PostgreSQL)
-# Структура: { "btc": 0.5, "eth": 2.0, ... }
+# In-memory storage (use PostgreSQL in production)
+# Structure: { "btc": 0.5, "eth": 2.0, ... }
 # ---------------------------------------------------------------------------
 portfolio: dict[str, float] = {}
 
 
 # ---------------------------------------------------------------------------
-# Схемы
+# Schemas
 # ---------------------------------------------------------------------------
 
 class AddAssetRequest(BaseModel):
-    """Добавить монету в портфолио."""
-    ticker: str = Field(..., example="btc", description="Тикер монеты (btc, eth, sol...)")
-    amount: float = Field(..., gt=0, example=0.5, description="Количество монет")
+    """Request body for adding a coin to the portfolio."""
+    ticker: str = Field(..., example="btc", description="Coin ticker (btc, eth, sol...)")
+    amount: float = Field(..., gt=0, example=0.5, description="Amount of coins")
 
 
 class AssetInfo(BaseModel):
-    """Информация об одной монете в портфолио."""
+    """Info about a single coin in the portfolio."""
     ticker: str
     amount: float
     price_usd: float
     value_usd: float
-    change_24h_pct: Optional[float]  # изменение цены за 24 часа в %
+    change_24h_pct: Optional[float]  # 24h price change in %
 
 
 class PortfolioResponse(BaseModel):
-    """Полный отчёт по портфолио."""
+    """Full portfolio report."""
     assets: list[AssetInfo]
     total_value_usd: float
 
 
 # ---------------------------------------------------------------------------
-# Вспомогательные функции
+# Helpers
 # ---------------------------------------------------------------------------
 
 async def fetch_prices(coin_ids: list[str]) -> dict:
     """
-    Запрашивает актуальные цены у CoinGecko.
-    Возвращает словарь: { "bitcoin": {"usd": 65000, "usd_24h_change": 2.5}, ... }
+    Fetches live prices from CoinGecko.
+    Returns: { "bitcoin": {"usd": 65000, "usd_24h_change": 2.5}, ... }
     """
     ids_param = ",".join(coin_ids)
     url = f"{COINGECKO_URL}/simple/price"
@@ -98,19 +108,19 @@ async def fetch_prices(coin_ids: list[str]) -> dict:
     if response.status_code != 200:
         raise HTTPException(
             status_code=502,
-            detail="Не удалось получить цены от CoinGecko. Попробуйте позже."
+            detail="Failed to fetch prices from CoinGecko. Please try again later."
         )
 
     return response.json()
 
 
 # ---------------------------------------------------------------------------
-# Эндпоинты
+# Endpoints
 # ---------------------------------------------------------------------------
 
-@app.get("/coins", summary="Список поддерживаемых монет")
+@app.get("/coins", summary="List supported coins")
 async def list_coins() -> dict:
-    """Показывает все монеты, которые поддерживает трекер."""
+    """Returns all coins supported by the tracker."""
     return {
         "supported_coins": [
             {"ticker": ticker, "name": coin_id}
@@ -119,57 +129,52 @@ async def list_coins() -> dict:
     }
 
 
-@app.post("/portfolio/add", summary="Добавить монету в портфолио")
+@app.post("/portfolio/add", summary="Add a coin to the portfolio")
 async def add_asset(request: AddAssetRequest) -> dict:
     """
-    Добавляет монету в портфолио или увеличивает существующую позицию.
-    Пример: { "ticker": "btc", "amount": 0.5 }
+    Adds a coin to the portfolio or increases an existing position.
+    Example: { "ticker": "btc", "amount": 0.5 }
     """
     ticker = request.ticker.lower()
 
-    # Проверяем, поддерживается ли монета
     if ticker not in TICKER_TO_ID:
         raise HTTPException(
             status_code=400,
-            detail=f"Монета '{ticker}' не поддерживается. Доступны: {list(TICKER_TO_ID.keys())}"
+            detail=f"Coin '{ticker}' is not supported. Available: {list(TICKER_TO_ID.keys())}"
         )
 
-    # Добавляем к существующей позиции (или создаём новую)
     portfolio[ticker] = portfolio.get(ticker, 0) + request.amount
 
     return {
         "status": "ok",
         "ticker": ticker,
         "total_amount": portfolio[ticker],
-        "message": f"Добавлено {request.amount} {ticker.upper()}. Итого: {portfolio[ticker]}"
+        "message": f"Added {request.amount} {ticker.upper()}. Total: {portfolio[ticker]}"
     }
 
 
-@app.delete("/portfolio/remove/{ticker}", summary="Удалить монету из портфолио")
+@app.delete("/portfolio/remove/{ticker}", summary="Remove a coin from the portfolio")
 async def remove_asset(ticker: str) -> dict:
-    """Полностью убирает монету из портфолио."""
+    """Completely removes a coin from the portfolio."""
     ticker = ticker.lower()
 
     if ticker not in portfolio:
-        raise HTTPException(status_code=404, detail=f"Монеты {ticker} нет в портфолио")
+        raise HTTPException(status_code=404, detail=f"{ticker} not found in portfolio")
 
     del portfolio[ticker]
-    return {"status": "ok", "message": f"{ticker.upper()} удалён из портфолио"}
+    return {"status": "ok", "message": f"{ticker.upper()} removed from portfolio"}
 
 
-@app.get("/portfolio", summary="Текущий портфолио с ценами")
+@app.get("/portfolio", summary="Get portfolio with live prices")
 async def get_portfolio() -> PortfolioResponse:
     """
-    Возвращает весь портфолио с актуальными ценами и общей стоимостью.
-    Цены подтягиваются с CoinGecko в реальном времени.
+    Returns the full portfolio with live prices and total value.
+    Prices are fetched from CoinGecko in real time.
     """
     if not portfolio:
         return PortfolioResponse(assets=[], total_value_usd=0)
 
-    # Получаем ID монет для запроса к API
     coin_ids = [TICKER_TO_ID[ticker] for ticker in portfolio]
-
-    # Запрашиваем актуальные цены
     prices_data = await fetch_prices(coin_ids)
 
     assets = []
@@ -192,7 +197,6 @@ async def get_portfolio() -> PortfolioResponse:
             change_24h_pct=round(change_24h, 2) if change_24h else None,
         ))
 
-    # Сортируем по стоимости — самые крупные позиции сверху
     assets.sort(key=lambda x: x.value_usd, reverse=True)
 
     return PortfolioResponse(
@@ -201,15 +205,15 @@ async def get_portfolio() -> PortfolioResponse:
     )
 
 
-@app.get("/price/{ticker}", summary="Цена конкретной монеты")
+@app.get("/price/{ticker}", summary="Get price of a single coin")
 async def get_price(ticker: str) -> dict:
-    """Быстрая проверка цены одной монеты."""
+    """Quick price check for a single coin."""
     ticker = ticker.lower()
 
     if ticker not in TICKER_TO_ID:
         raise HTTPException(
             status_code=400,
-            detail=f"Монета '{ticker}' не поддерживается"
+            detail=f"Coin '{ticker}' is not supported"
         )
 
     coin_id = TICKER_TO_ID[ticker]
